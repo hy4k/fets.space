@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidWorkstation(ws) {
+      return ws.id is string 
+        && ws.id.size() <= 64
+        && ws.name is string
+        && ws.name.size() <= 200
+        && ws.type in ['workstation', 'admin', 'server']
+        && ws.exams is list
+        && ws.processor is string
+        && ws.ram is string
+        && ws.hdd is string
+        && ws.brandCpu is string
+        && ws.brandMonitor is string
+        && ws.cameraAligned is string;
+    }
+
+    match /workstations/{wsId} {
+      // Allow anyone to read all workstations
+      allow get: if true;
+      allow list: if true;
+      
+      // Allow anyone to create/update/delete
+      allow create: if isValidWorkstation(request.resource.data);
+      
+      allow update: if (
+        isValidWorkstation(request.resource.data)
+        // Ensure ID is immutable
+        && request.resource.data.id == resource.data.id
+      );
+      
+      allow delete: if true;
+    }
+  }
+}

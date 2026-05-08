@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "workstation": {
+      "title": "Workstation",
+      "description": "Hardware and software configuration for a system",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier (e.g., W01)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human readable name"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["workstation", "admin", "server"],
+          "description": "Classification of the system"
+        },
+        "brandCpu": {
+          "type": "string"
+        },
+        "brandMonitor": {
+          "type": "string"
+        },
+        "processor": {
+          "type": "string"
+        },
+        "ram": {
+          "type": "string"
+        },
+        "hdd": {
+          "type": "string"
+        },
+        "cameraAligned": {
+          "type": "string",
+          "description": "The camera coverage details for this workstation"
+        },
+        "exams": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "lastAuditAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "type", "exams"]
+    }
+  },
+  "firestore": {
+    "/workstations/{workstationId}": {
+      "schema": "workstation",
+      "description": "Global workstation registry"
+    }
+  }
+}
