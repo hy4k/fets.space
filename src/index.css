@@ -1,28 +1,41 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:ital,wdth,wght@0,62..125,100..900;1,62..125,100..900&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-paper: #EFECE5;
+  --color-card: #FBFAF7;
+  --color-ink: #1A1712;
+  --color-ink-soft: #6F6A60;
+  --color-line: #DDD8CD;
 }
 
 @layer base {
   body {
-    @apply antialiased;
+    @apply antialiased bg-paper text-ink;
+    font-feature-settings: "ss01";
+  }
+}
+
+@layer utilities {
+  /* Expanded-width Archivo for headings — the "asset tag" voice of the app */
+  .font-display {
+    font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
+    font-stretch: 118%;
+    font-weight: 900;
+    letter-spacing: -0.03em;
+  }
+  .texture-paper {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(26, 23, 18, 0.04), transparent),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.025 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 }
 
 @media print {
-  @page {
-    size: A4;
-    margin: 10mm;
-  }
   body {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-    background-color: white !important;
-  }
-  .print\:hidden {
-    display: none !important;
+    background: white !important;
   }
 }
