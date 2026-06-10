@@ -43,6 +43,9 @@ import {
   EXAM_LIST,
   STATUS_META,
   SystemStatus,
+  LogKind,
+  LOG_KIND_META,
+  SystemLog,
   centreOf,
   statusOf,
 } from './types';
@@ -101,9 +104,74 @@ const LoadingScreen = () => (
 
 const StatusDot = ({ status, size = 8 }: { status: SystemStatus; size?: number }) => (
   <span
-    className="inline-block rounded-full shrink-0"
+    className={cn('inline-block rounded-full shrink-0', status === 'fault' && 'animate-pulse')}
     style={{ width: size, height: size, backgroundColor: STATUS_META[status].color }}
   />
+);
+
+const openIssueCount = (ws: Workstation) => (ws.logs ?? []).filter((l) => !l.resolved).length;
+
+// Module-level so React doesn't remount them (and drop input focus) on every render.
+
+const Field = ({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) => (
+  <div className="space-y-1.5">
+    <label className="text-[10px] font-mono uppercase font-semibold text-ink-soft tracking-wider ml-1">{label}</label>
+    <input
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="w-full p-3.5 bg-paper/60 border border-line rounded-xl font-medium text-sm focus:border-ink outline-none transition-colors"
+    />
+  </div>
+);
+
+const Sticker = ({
+  ws,
+  type,
+  centreName,
+  size = 160,
+}: {
+  ws: Workstation;
+  type: (typeof STICKER_TYPES)[number];
+  centreName: string;
+  size?: number;
+}) => (
+  <div className="flex flex-col items-center justify-center p-3 border border-line rounded-2xl relative bg-white overflow-hidden">
+    <div className="absolute top-0 left-0 w-full h-1.5" style={{ backgroundColor: type.color }} />
+    <QRCodeSVG
+      id={`qr-${ws.id}-${type.key}`}
+      value={qrUrl(ws.id)}
+      size={size}
+      level="H"
+      fgColor="#1A1712"
+      includeMargin={false}
+      className="w-full h-auto mb-3 mt-3"
+    />
+    <div className="text-center w-full mt-auto">
+      <div className="flex justify-between items-center w-full border-t border-line pt-2 mb-1 gap-2">
+        <span className="font-display text-xl" style={{ color: type.color }}>{ws.id}</span>
+        <span
+          className="font-mono text-[9px] font-bold uppercase py-1 px-2 rounded text-white tracking-wider"
+          style={{ backgroundColor: type.color }}
+        >
+          {type.location}
+        </span>
+      </div>
+      <p className="font-mono text-[8px] uppercase font-semibold text-ink-soft tracking-widest">
+        {centreName} · fets.space
+      </p>
+    </div>
+  </div>
 );
 
 // --- Main App ---
@@ -235,6 +303,59 @@ export default function App() {
     }
   };
 
+  const [isReporting, setIsReporting] = useState(false);
+  const [reportKind, setReportKind] = useState<LogKind>('fault');
+  const [reportText, setReportText] = useState('');
+
+  const submitReport = async () => {
+    if (!selectedStation) return;
+    const meta = LOG_KIND_META[reportKind];
+    const otherCentre = CENTRES.find((c) => c.id !== centreOf(selectedStation))!;
+    const entry: SystemLog = {
+      at: new Date().toISOString(),
+      kind: reportKind,
+      text: reportText.trim() || meta.label,
+      // Transfers and notes are records, not open issues
+      resolved: reportKind === 'transfer' || reportKind === 'note',
+    };
+    if (reportKind === 'transfer') {
+      entry.text = `Moved to ${otherCentre.name}${reportText.trim() ? ' — ' + reportText.trim() : ''}`;
+    }
+    const updates: { [key: string]: any } = { logs: [...(selectedStation.logs ?? []), entry] };
+    if (reportKind === 'transfer') updates.centre = otherCentre.id;
+    else if (meta.autoStatus) updates.status = meta.autoStatus;
+
+    try {
+      await updateDoc(doc(db, 'workstations', selectedStation.id), updates);
+      const updated = { ...selectedStation, ...updates } as Workstation;
+      setSelectedStation(updated);
+      setEditForm(updated);
+      if (reportKind === 'transfer') setActiveCentreId(otherCentre.id);
+      setIsReporting(false);
+      setReportText('');
+      setReportKind('fault');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `workstations/${selectedStation.id}`);
+    }
+  };
+
+  const resolveLog = async (index: number) => {
+    if (!selectedStation) return;
+    const logs = [...(selectedStation.logs ?? [])];
+    logs[index] = { ...logs[index], resolved: true };
+    const updates: { [key: string]: any } = { logs };
+    // All issues closed → system is back in service
+    if (!logs.some((l) => !l.resolved)) updates.status = 'operational';
+    try {
+      await updateDoc(doc(db, 'workstations', selectedStation.id), updates);
+      const updated = { ...selectedStation, ...updates } as Workstation;
+      setSelectedStation(updated);
+      setEditForm(updated);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `workstations/${selectedStation.id}`);
+    }
+  };
+
   const markAudited = async (ws: Workstation) => {
     try {
       const updated = { ...ws, lastAuditAt: new Date().toISOString() };
@@ -266,6 +387,8 @@ export default function App() {
         centre: centre.id,
         status: 'operational',
         notes: '',
+        os: 'Windows 11',
+        logs: [],
         brandCpu: 'Dell Precision',
         brandMonitor: 'Dell UltraSharp',
         processor: 'Intel Core i7-12700',
@@ -283,6 +406,8 @@ export default function App() {
       centre: centre.id,
       status: 'operational',
       notes: '',
+      os: 'Windows 11',
+      logs: [],
       brandCpu: 'HP EliteDesk',
       brandMonitor: 'Dual HP 24"',
       processor: 'Intel Core i9-13900',
@@ -299,6 +424,8 @@ export default function App() {
       centre: centre.id,
       status: 'operational',
       notes: '',
+      os: 'Windows Server',
+      logs: [],
       brandCpu: 'Dell PowerEdge R750',
       brandMonitor: 'Rack Console',
       processor: '2x Intel Xeon Platinum',
@@ -340,6 +467,8 @@ export default function App() {
       centre: activeCentreId,
       status: 'operational',
       notes: '',
+      os: '',
+      logs: [],
       brandCpu: '',
       brandMonitor: '',
       processor: '',
@@ -385,37 +514,6 @@ export default function App() {
     setIsDownloadingAll(false);
   };
 
-
-  // --- QR Sticker (shared by print sheet + detail view) ---
-
-  const Sticker = ({ ws, type, size = 160 }: { ws: Workstation; type: (typeof STICKER_TYPES)[number]; size?: number }) => (
-    <div className="flex flex-col items-center justify-center p-3 border border-line rounded-2xl relative bg-white overflow-hidden">
-      <div className="absolute top-0 left-0 w-full h-1.5" style={{ backgroundColor: type.color }} />
-      <QRCodeSVG
-        id={`qr-${ws.id}-${type.key}`}
-        value={qrUrl(ws.id)}
-        size={size}
-        level="H"
-        fgColor="#1A1712"
-        includeMargin={false}
-        className="w-full h-auto mb-3 mt-3"
-      />
-      <div className="text-center w-full mt-auto">
-        <div className="flex justify-between items-center w-full border-t border-line pt-2 mb-1 gap-2">
-          <span className="font-display text-xl" style={{ color: type.color }}>{ws.id}</span>
-          <span
-            className="font-mono text-[9px] font-bold uppercase py-1 px-2 rounded text-white tracking-wider"
-            style={{ backgroundColor: type.color }}
-          >
-            {type.location}
-          </span>
-        </div>
-        <p className="font-mono text-[8px] uppercase font-semibold text-ink-soft tracking-widest">
-          {activeCentre.name} · fets.space
-        </p>
-      </div>
-    </div>
-  );
 
   // --- Print View: A4 sheets, 5 systems per page × 3 stickers ---
 
@@ -474,7 +572,7 @@ export default function App() {
                 {page.map((ws) => (
                   <div key={ws.id} className="grid grid-cols-3 gap-[8mm] pb-[5mm] border-b border-dashed border-line last:border-0">
                     {STICKER_TYPES.map((type) => (
-                      <Sticker key={type.key} ws={ws} type={type} />
+                      <Sticker key={type.key} ws={ws} type={type} centreName={activeCentre.name} />
                     ))}
                   </div>
                 ))}
@@ -485,30 +583,6 @@ export default function App() {
       </div>
     );
   };
-
-  // --- Edit form field helper ---
-
-  const Field = ({
-    label,
-    value,
-    onChange,
-    placeholder,
-  }: {
-    label: string;
-    value: string;
-    onChange: (v: string) => void;
-    placeholder?: string;
-  }) => (
-    <div className="space-y-1.5">
-      <label className="text-[10px] font-mono uppercase font-semibold text-ink-soft tracking-wider ml-1">{label}</label>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full p-3.5 bg-paper/60 border border-line rounded-xl font-medium text-sm focus:border-ink outline-none transition-colors"
-      />
-    </div>
-  );
 
   if (loading) return <LoadingScreen />;
   if (isPrinting) return <PrintView />;
@@ -624,8 +698,15 @@ export default function App() {
                     transition={{ delay: Math.min(i * 0.012, 0.4), duration: 0.2 }}
                     onClick={() => openStation(ws.id)}
                     className={cn(
-                      'group relative flex flex-col items-center justify-center aspect-square border border-line rounded-2xl bg-card transition-all',
+                      'group relative flex flex-col items-center justify-center aspect-square border rounded-2xl transition-all',
                       'hover:border-ink hover:shadow-[0_8px_24px_-12px_rgba(26,23,18,0.4)] hover:-translate-y-0.5 active:translate-y-0 active:scale-95',
+                      statusOf(ws) === 'fault'
+                        ? 'border-red-400 bg-red-50'
+                        : statusOf(ws) === 'maintenance'
+                          ? 'border-amber-300 bg-amber-50'
+                          : statusOf(ws) === 'away'
+                            ? 'border-dashed border-line bg-paper/60 opacity-70'
+                            : 'border-line bg-card',
                     )}
                   >
                     <span className="absolute top-2 right-2">
@@ -640,6 +721,11 @@ export default function App() {
                       </span>
                     )}
                     <span className="font-display text-xl sm:text-2xl uppercase">{ws.id}</span>
+                    {openIssueCount(ws) > 0 && (
+                      <span className="absolute bottom-1.5 font-mono text-[8px] font-bold uppercase text-red-600">
+                        {openIssueCount(ws)} issue{openIssueCount(ws) > 1 ? 's' : ''}
+                      </span>
+                    )}
                   </motion.button>
                 ))}
               </div>
@@ -725,7 +811,7 @@ export default function App() {
 
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-mono uppercase font-semibold text-ink-soft tracking-wider ml-1">Status</label>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         {(Object.keys(STATUS_META) as SystemStatus[]).map((s) => (
                           <button
                             key={s}
@@ -745,6 +831,7 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-4">
                       <Field label="Processor" value={editForm?.processor || ''} onChange={(v) => setEditForm((p) => p && { ...p, processor: v })} placeholder="e.g. Intel Core i7" />
                       <Field label="RAM" value={editForm?.ram || ''} onChange={(v) => setEditForm((p) => p && { ...p, ram: v })} placeholder="e.g. 32GB DDR4" />
+                      <Field label="Operating System" value={editForm?.os || ''} onChange={(v) => setEditForm((p) => p && { ...p, os: v })} placeholder="e.g. Windows 11" />
                       <Field label="Storage" value={editForm?.hdd || ''} onChange={(v) => setEditForm((p) => p && { ...p, hdd: v })} placeholder="e.g. 1TB SSD" />
                       <Field label="Camera" value={editForm?.cameraAligned || ''} onChange={(v) => setEditForm((p) => p && { ...p, cameraAligned: v })} placeholder="e.g. CCTV Zone A" />
                       <Field label="CPU Brand" value={editForm?.brandCpu || ''} onChange={(v) => setEditForm((p) => p && { ...p, brandCpu: v })} placeholder="e.g. Dell Precision" />
@@ -790,7 +877,7 @@ export default function App() {
                   /* ---- DETAIL (scan landing) MODE ---- */
                   <div className="space-y-5">
                     {/* Header card */}
-                    <div className="text-white p-7 sm:p-9 rounded-[2rem] relative overflow-hidden" style={{ backgroundColor: '#1A1712' }}>
+                    <div className="text-white p-5 sm:p-7 rounded-[2rem] relative overflow-hidden" style={{ backgroundColor: '#1A1712' }}>
                       <div className="absolute -right-16 -top-16 w-56 h-56 rounded-full blur-3xl opacity-30" style={{ backgroundColor: activeCentre.accent }} />
                       <div className="relative z-10">
                         <div className="flex justify-between items-start mb-6">
@@ -813,37 +900,143 @@ export default function App() {
                             <Pencil size={18} />
                           </button>
                         </div>
-                        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/40 block mb-1">System ID</span>
-                        <h2 className="font-display text-6xl sm:text-7xl uppercase leading-none">{selectedStation.id}</h2>
-                        <div className="mt-6 flex items-center gap-4">
-                          <div className="h-11 w-11 rounded-xl bg-white/10 flex items-center justify-center">
-                            {selectedStation.type === 'server' ? <Database size={20} /> : selectedStation.type === 'admin' ? <Shield size={20} /> : <Monitor size={20} />}
+                        <div className="flex items-center gap-3">
+                          <h2 className="font-display text-4xl sm:text-5xl uppercase leading-none">{selectedStation.id}</h2>
+                          <div className="min-w-0">
+                            <p className="text-[8px] font-mono uppercase text-white/40 mb-0.5">{selectedStation.type}</p>
+                            <h4 className="font-bold text-sm leading-tight truncate">{selectedStation.name}</h4>
                           </div>
-                          <div>
-                            <p className="text-[9px] font-mono uppercase text-white/40 mb-0.5">{selectedStation.type}</p>
-                            <h4 className="font-bold text-base leading-tight">{selectedStation.name}</h4>
-                          </div>
+                        </div>
+                        {/* Micro specs inside the ID card */}
+                        <div className="mt-4 pt-3.5 border-t border-white/10 grid grid-cols-2 gap-x-5 gap-y-2">
+                          {[
+                            { k: 'CPU', v: [selectedStation.processor, selectedStation.brandCpu].filter(Boolean).join(' · ') },
+                            { k: 'RAM', v: selectedStation.ram },
+                            { k: 'OS', v: selectedStation.os },
+                            { k: 'Disk', v: selectedStation.hdd },
+                            { k: 'Monitor', v: selectedStation.brandMonitor },
+                            { k: 'CCTV', v: selectedStation.cameraAligned },
+                          ].map((row) => (
+                            <div key={row.k} className="flex items-baseline justify-between gap-2 min-w-0">
+                              <span className="font-mono text-[9px] uppercase tracking-wider text-white/35 shrink-0">{row.k}</span>
+                              <span className="font-mono text-[11px] text-white/85 text-right truncate">{row.v || '—'}</span>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </div>
 
-                    {/* Specs */}
-                    <div className="bg-card border border-line rounded-[2rem] p-5 sm:p-7 space-y-6">
-                      <div className="grid grid-cols-2 gap-3">
-                        {[
-                          { label: 'Processor', value: selectedStation.processor, sub: selectedStation.brandCpu },
-                          { label: 'Memory / Storage', value: selectedStation.ram, sub: selectedStation.hdd },
-                          { label: 'Monitor', value: selectedStation.brandMonitor, sub: '' },
-                          { label: 'Camera Coverage', value: selectedStation.cameraAligned, sub: '' },
-                        ].map((item) => (
-                          <div key={item.label} className="p-4 bg-paper/60 rounded-2xl border border-line/60">
-                            <p className="text-[9px] font-mono uppercase text-ink-soft mb-1.5 font-semibold tracking-wider">{item.label}</p>
-                            <p className="font-bold text-sm leading-snug">{item.value || '—'}</p>
-                            {item.sub && <p className="text-[10px] font-mono text-ink-soft mt-1">{item.sub}</p>}
+                    {/* Issue & movement log */}
+                    <div className="bg-card border border-line rounded-[2rem] p-5 sm:p-6 space-y-4">
+                      <div className="flex justify-between items-center">
+                        <h4 className="font-mono text-[10px] uppercase font-semibold tracking-[0.2em] text-ink-soft flex items-center gap-2">
+                          <AlertCircle size={13} /> Issue & Movement Log
+                          {openIssueCount(selectedStation) > 0 && (
+                            <span className="bg-red-600 text-white rounded-full px-2 py-0.5 text-[9px] font-bold normal-case tracking-normal">
+                              {openIssueCount(selectedStation)} open
+                            </span>
+                          )}
+                        </h4>
+                        <button
+                          onClick={() => setIsReporting(!isReporting)}
+                          className={cn(
+                            'flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold transition-all active:scale-95',
+                            isReporting ? 'bg-paper border border-line text-ink-soft' : 'bg-ink text-white',
+                          )}
+                        >
+                          {isReporting ? <X size={13} /> : <Plus size={13} />}
+                          {isReporting ? 'Cancel' : 'Report'}
+                        </button>
+                      </div>
+
+                      {isReporting && (
+                        <div className="p-4 bg-paper/70 border border-line rounded-2xl space-y-3">
+                          <div className="flex flex-wrap gap-1.5">
+                            {(Object.keys(LOG_KIND_META) as LogKind[]).map((kind) => (
+                              <button
+                                key={kind}
+                                onClick={() => setReportKind(kind)}
+                                className={cn(
+                                  'px-3 py-1.5 rounded-full text-[11px] font-bold border transition-all',
+                                  reportKind === kind ? 'text-white border-transparent' : 'bg-card border-line text-ink-soft',
+                                )}
+                                style={reportKind === kind ? { backgroundColor: LOG_KIND_META[kind].color } : undefined}
+                              >
+                                {LOG_KIND_META[kind].label}
+                              </button>
+                            ))}
+                          </div>
+                          {reportKind === 'transfer' && (
+                            <p className="text-[11px] font-mono text-ink-soft">
+                              System will be moved to{' '}
+                              <strong className="text-ink">{CENTRES.find((c) => c.id !== centreOf(selectedStation))!.name}</strong>.
+                            </p>
+                          )}
+                          <textarea
+                            value={reportText}
+                            onChange={(e) => setReportText(e.target.value)}
+                            rows={2}
+                            placeholder={reportKind === 'transfer' ? 'Reason for transfer (optional)…' : 'Describe the issue…'}
+                            className="w-full p-3 bg-card border border-line rounded-xl text-sm focus:border-ink outline-none transition-colors resize-none"
+                          />
+                          <button
+                            onClick={submitReport}
+                            className="w-full py-3 text-white font-bold uppercase tracking-wider text-xs rounded-xl active:scale-[0.98] transition-transform"
+                            style={{ backgroundColor: LOG_KIND_META[reportKind].color }}
+                          >
+                            Log {LOG_KIND_META[reportKind].label}
+                          </button>
+                        </div>
+                      )}
+
+                      {(selectedStation.logs ?? []).length === 0 && !isReporting && (
+                        <p className="text-xs text-ink-soft font-mono text-center py-3">No issues recorded. All clear.</p>
+                      )}
+
+                      <div className="space-y-2">
+                        {(selectedStation.logs ?? []).map((log, i) => ({ log, i })).reverse().map(({ log, i }) => (
+                          <div
+                            key={i}
+                            className={cn(
+                              'flex items-start gap-3 p-3.5 rounded-xl border',
+                              log.resolved ? 'border-line/60 opacity-55' : 'border-line bg-paper/50',
+                            )}
+                          >
+                            <span
+                              className="mt-1 inline-block w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: LOG_KIND_META[log.kind]?.color ?? '#999999' }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex justify-between items-center gap-2 mb-0.5">
+                                <span
+                                  className="font-mono text-[9px] uppercase font-bold tracking-wider"
+                                  style={{ color: LOG_KIND_META[log.kind]?.color }}
+                                >
+                                  {LOG_KIND_META[log.kind]?.label ?? log.kind}
+                                </span>
+                                <span className="font-mono text-[9px] text-ink-soft shrink-0">{timeAgo(log.at)}</span>
+                              </div>
+                              <p className="text-sm font-medium leading-snug">{log.text}</p>
+                            </div>
+                            {!log.resolved ? (
+                              <button
+                                onClick={() => resolveLog(i)}
+                                className="shrink-0 px-2.5 py-1.5 rounded-lg border border-line text-[10px] font-bold uppercase text-emerald-700 hover:bg-emerald-50 transition-colors"
+                              >
+                                Resolve
+                              </button>
+                            ) : (
+                              log.kind !== 'transfer' && log.kind !== 'note' && (
+                                <span className="shrink-0 font-mono text-[9px] uppercase text-emerald-700 font-bold mt-1">Resolved</span>
+                              )
+                            )}
                           </div>
                         ))}
                       </div>
+                    </div>
 
+                    {/* Software / notes / audit */}
+                    <div className="bg-card border border-line rounded-[2rem] p-5 sm:p-6 space-y-5">
                       {/* Software */}
                       <div>
                         <h4 className="font-mono text-[10px] uppercase font-semibold tracking-[0.2em] text-ink-soft mb-3 flex items-center gap-2">
@@ -908,7 +1101,7 @@ export default function App() {
                       <div className="grid grid-cols-3 gap-2.5">
                         {STICKER_TYPES.map((type) => (
                           <button key={type.key} onClick={() => downloadQR(selectedStation.id, type.key)} className="active:scale-95 transition-transform text-left">
-                            <Sticker ws={selectedStation} type={type} size={120} />
+                            <Sticker ws={selectedStation} type={type} size={120} centreName={activeCentre.name} />
                           </button>
                         ))}
                       </div>

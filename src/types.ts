@@ -1,6 +1,6 @@
 export type SystemType = 'workstation' | 'admin' | 'server';
 export type CentreId = 'calicut' | 'cochin';
-export type SystemStatus = 'operational' | 'maintenance' | 'fault';
+export type SystemStatus = 'operational' | 'maintenance' | 'fault' | 'away';
 
 export const EXAM_LIST = ['CMA US', 'PEARSON VIEW', 'PSI', 'CELPIP', 'ITTS'] as const;
 export type ExamName = typeof EXAM_LIST[number];
@@ -24,7 +24,26 @@ export const STATUS_META: Record<SystemStatus, { label: string; color: string }>
   operational: { label: 'Operational', color: '#0B9E6E' },
   maintenance: { label: 'Maintenance', color: '#D98E04' },
   fault: { label: 'Fault', color: '#D43A2F' },
+  away: { label: 'Off-site', color: '#64748B' },
 };
+
+/** Issue & movement log */
+export type LogKind = 'fault' | 'software' | 'maintenance' | 'transfer' | 'note';
+
+export const LOG_KIND_META: Record<LogKind, { label: string; color: string; autoStatus?: SystemStatus }> = {
+  fault: { label: 'Hardware Fault', color: '#D43A2F', autoStatus: 'fault' },
+  software: { label: 'Software Issue', color: '#D98E04', autoStatus: 'maintenance' },
+  maintenance: { label: 'Sent for Service', color: '#64748B', autoStatus: 'away' },
+  transfer: { label: 'Centre Transfer', color: '#2E45C8' },
+  note: { label: 'Note', color: '#0B7B5E' },
+};
+
+export interface SystemLog {
+  at: string;
+  kind: LogKind;
+  text: string;
+  resolved?: boolean;
+}
 
 export interface Workstation {
   id: string;
@@ -34,6 +53,8 @@ export interface Workstation {
   centre?: CentreId;
   status?: SystemStatus;
   notes?: string;
+  os?: string;
+  logs?: SystemLog[];
   brandCpu: string;
   brandMonitor: string;
   processor: string;
