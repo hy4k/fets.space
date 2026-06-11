@@ -9,6 +9,7 @@ import {
   Printer,
   Pencil,
   Download,
+  FileDown,
   CheckCircle2,
   AlertCircle,
   QrCode,
@@ -22,6 +23,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { jsPDF } from 'jspdf';
 import {
   collection,
   doc,
@@ -497,6 +499,96 @@ export default function App() {
     a.click();
   };
 
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+  // Colour A3 PDF for outside sticker printing — 12 systems (36 stickers) per page.
+  const downloadPdfA3 = async () => {
+    if (centreStations.length === 0) return;
+    setIsExportingPdf(true);
+    try {
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a3' });
+      const PAGE_W = 297;
+      const PAGE_H = 420;
+      const M = 12; // page margin
+      const GROUP_GAP = 9; // between the two system-groups in a row
+      const STICKER_GAP = 4; // between stickers of one system
+      const ROW_GAP = 6;
+      const groupW = (PAGE_W - 2 * M - GROUP_GAP) / 2;
+      const stW = (groupW - 2 * STICKER_GAP) / 3;
+      const stH = 54;
+      const perRow = 2; // systems per row
+      const rowsPerPage = Math.floor((PAGE_H - 2 * M + ROW_GAP) / (stH + ROW_GAP));
+      const perPage = perRow * rowsPerPage;
+
+      const hex2rgb = (h: string): [number, number, number] => [
+        parseInt(h.slice(1, 3), 16),
+        parseInt(h.slice(3, 5), 16),
+        parseInt(h.slice(5, 7), 16),
+      ];
+
+      for (let idx = 0; idx < centreStations.length; idx++) {
+        const ws = centreStations[idx];
+        const slot = idx % perPage;
+        if (idx > 0 && slot === 0) pdf.addPage();
+        const row = Math.floor(slot / perRow);
+        const col = slot % perRow;
+        const gx = M + col * (groupW + GROUP_GAP);
+        const gy = M + row * (stH + ROW_GAP);
+
+        for (let s = 0; s < STICKER_TYPES.length; s++) {
+          const type = STICKER_TYPES[s];
+          const x = gx + s * (stW + STICKER_GAP);
+          const y = gy;
+          const [r, g, b] = hex2rgb(type.color);
+
+          // sticker outline
+          pdf.setDrawColor(208, 204, 194);
+          pdf.setFillColor(255, 255, 255);
+          pdf.roundedRect(x, y, stW, stH, 2.5, 2.5, 'FD');
+
+          // top colour bar
+          pdf.setFillColor(r, g, b);
+          pdf.rect(x + 0.3, y + 0.3, stW - 0.6, 1.8, 'F');
+
+          // QR code
+          const svg = document.getElementById(`qr-${ws.id}-${type.key}`) as unknown as SVGSVGElement;
+          if (svg) {
+            const png = await svgToPng(svg, 6);
+            const qrSize = stW - 10;
+            pdf.addImage(png, 'PNG', x + (stW - qrSize) / 2, y + 4.5, qrSize, qrSize);
+          }
+
+          const ty = y + 4.5 + (stW - 10) + 3; // divider line position
+          pdf.setDrawColor(225, 221, 212);
+          pdf.line(x + 4, ty, x + stW - 4, ty);
+
+          // system ID
+          pdf.setTextColor(r, g, b);
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(13);
+          pdf.text(ws.id, x + 4, ty + 5.8);
+
+          // location badge
+          pdf.setFontSize(5.5);
+          const bw = pdf.getTextWidth(type.location) + 3;
+          pdf.setFillColor(r, g, b);
+          pdf.roundedRect(x + stW - 4 - bw, ty + 2.2, bw, 3.8, 1, 1, 'F');
+          pdf.setTextColor(255, 255, 255);
+          pdf.text(type.location, x + stW - 4 - bw + 1.5, ty + 4.9);
+
+          // footer
+          pdf.setTextColor(152, 148, 140);
+          pdf.setFontSize(5);
+          pdf.text(`${activeCentre.name.toUpperCase()} · FETS.SPACE`, x + stW / 2, y + stH - 2.8, { align: 'center' });
+        }
+      }
+
+      pdf.save(`fets-${activeCentre.id}-stickers-A3.pdf`);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
   const downloadAllQRs = async () => {
     setIsDownloadingAll(true);
     const zip = new JSZip();
@@ -545,6 +637,16 @@ export default function App() {
                   ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
                   : <Download size={16} />}
                 {isDownloadingAll ? 'Zipping…' : 'Download PNGs'}
+              </button>
+              <button
+                onClick={downloadPdfA3}
+                disabled={isExportingPdf}
+                className="px-4 py-2.5 bg-ink text-white font-semibold text-sm rounded-xl flex items-center gap-2 hover:opacity-85 transition-opacity disabled:opacity-50"
+              >
+                {isExportingPdf
+                  ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                  : <FileDown size={16} />}
+                {isExportingPdf ? 'Building PDF…' : 'PDF A3'}
               </button>
               <button
                 onClick={() => window.print()}
