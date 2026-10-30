@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
+import { toSVG } from 'bwip-js/browser';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { jsPDF } from 'jspdf';
@@ -61,6 +62,22 @@ const STICKER_TYPES = [
 ] as const;
 
 const qrUrl = (id: string) => `https://fets.space/?id=${id}`;
+
+type StickerStyle = 'qr' | 'slim';
+
+// Slim stickers carry the same link as the QR, encoded as a rectangular Data Matrix (16×36 modules).
+const SLIM = { w: 50, h: 15, dmW: 19.8, dmH: 8.8 }; // mm — 0.55mm per module
+const dmCache = new Map<string, { w: number; h: number; d: string }>();
+const dataMatrix = (id: string) => {
+  let dm = dmCache.get(id);
+  if (!dm) {
+    const svg = toSVG({ bcid: 'datamatrixrectangular', text: qrUrl(id), scale: 1 });
+    const [, w, h] = svg.match(/viewBox="0 0 (\d+) (\d+)"/)!;
+    dm = { w: Number(w), h: Number(h), d: svg.match(/ d="([^"]+)"/)![1] };
+    dmCache.set(id, dm);
+  }
+  return dm;
+};
 
 function chunkArrays<T>(arr: T[], size: number): T[][] {
   return Array.from({ length: Math.ceil(arr.length / size) }, (_, i) => arr.slice(i * size, i * size + size));
@@ -176,6 +193,62 @@ const Sticker = ({
   </div>
 );
 
+// Sized by its wrapper: an inline style on the <svg> would be serialized and clip the PNG export.
+const DataMatrixSVG = ({ id, elId }: { id: string; elId: string }) => {
+  const { w, h, d } = dataMatrix(id);
+  return (
+    <svg id={elId} xmlns="http://www.w3.org/2000/svg" viewBox={`0 0 ${w} ${h}`} width={w} height={h} className="block w-full h-full">
+      <path d={d} fillRule="evenodd" fill="#1A1712" />
+    </svg>
+  );
+};
+
+const SlimSticker = ({
+  ws,
+  type,
+  centreName,
+}: {
+  ws: Workstation;
+  type: (typeof STICKER_TYPES)[number];
+  centreName: string;
+}) => (
+  <div
+    className="relative bg-white border border-line rounded-[2mm] overflow-hidden flex items-center shrink-0"
+    style={{ width: `${SLIM.w}mm`, height: `${SLIM.h}mm` }}
+  >
+    <div className="absolute left-0 top-0 h-full w-[1.6mm]" style={{ backgroundColor: type.color }} />
+    <div className="ml-[3.2mm] shrink-0" style={{ width: `${SLIM.dmW}mm`, height: `${SLIM.dmH}mm` }}>
+      <DataMatrixSVG id={ws.id} elId={`dm-${ws.id}-${type.key}`} />
+    </div>
+    <div className="ml-[2.5mm] min-w-0 flex flex-col items-start gap-[0.8mm] leading-none">
+      <span className="font-display text-[12pt] leading-none" style={{ color: type.color }}>{ws.id}</span>
+      <span
+        className="font-mono text-[5pt] font-bold uppercase px-[1mm] py-[0.5mm] rounded-[0.8mm] text-white tracking-wider"
+        style={{ backgroundColor: type.color }}
+      >
+        {type.location}
+      </span>
+      <span className="font-mono text-[4.5pt] uppercase font-semibold text-ink-soft tracking-widest whitespace-nowrap">
+        {centreName} · fets.space
+      </span>
+    </div>
+  </div>
+);
+
+const StickerStyleToggle = ({ value, onChange }: { value: StickerStyle; onChange: (v: StickerStyle) => void }) => (
+  <div className="inline-flex p-1 bg-paper border border-line rounded-xl font-mono text-[10px] uppercase font-semibold tracking-wider">
+    {(['qr', 'slim'] as const).map((v) => (
+      <button
+        key={v}
+        onClick={() => onChange(v)}
+        className={cn('px-3 py-1.5 rounded-lg transition-colors', value === v ? 'bg-ink text-white' : 'text-ink-soft hover:text-ink')}
+      >
+        {v === 'qr' ? 'Square QR' : 'Slim'}
+      </button>
+    ))}
+  </div>
+);
+
 // --- Main App ---
 
 export default function App() {
@@ -195,7 +268,15 @@ export default function App() {
     return saved === 'cochin' ? 'cochin' : 'calicut';
   });
 
+  const [stickerStyle, setStickerStyle] = useState<StickerStyle>(() =>
+    localStorage.getItem('fets-sticker-style') === 'slim' ? 'slim' : 'qr',
+  );
+
   const activeCentre = CENTRES.find((c) => c.id === activeCentreId)!;
+
+  useEffect(() => {
+    localStorage.setItem('fets-sticker-style', stickerStyle);
+  }, [stickerStyle]);
 
   useEffect(() => {
     localStorage.setItem('fets-centre', activeCentreId);
@@ -489,12 +570,15 @@ export default function App() {
     }
   };
 
+  const codePrefix = stickerStyle === 'slim' ? 'dm' : 'qr';
+  const codeScale = stickerStyle === 'slim' ? 20 : 5;
+
   const downloadQR = async (stationId: string, label: string) => {
-    const svg = document.getElementById(`qr-${stationId}-${label}`) as unknown as SVGSVGElement;
+    const svg = document.getElementById(`${codePrefix}-${stationId}-${label}`) as unknown as SVGSVGElement;
     if (!svg) return;
-    const png = await svgToPng(svg, 5);
+    const png = await svgToPng(svg, codeScale);
     const a = document.createElement('a');
-    a.download = `QR-${stationId}-${label}.png`;
+    a.download = `${codePrefix.toUpperCase()}-${stationId}-${label}.png`;
     a.href = png;
     a.click();
   };
@@ -504,6 +588,7 @@ export default function App() {
   // Colour A3 PDF for outside sticker printing — 12 systems (36 stickers) per page.
   const downloadPdfA3 = async () => {
     if (centreStations.length === 0) return;
+    if (stickerStyle === 'slim') return downloadSlimPdfA3();
     setIsExportingPdf(true);
     try {
       const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a3' });
@@ -589,37 +674,120 @@ export default function App() {
     }
   };
 
+  // Slim A3 PDF — 50×15mm labels, each system's three stacked, 35 systems per page.
+  const downloadSlimPdfA3 = async () => {
+    setIsExportingPdf(true);
+    try {
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a3' });
+      const PAGE_W = 297;
+      const PAGE_H = 420;
+      const M = 12;
+      const STICKER_GAP = 2; // between stickers of one system
+      const ROW_GAP = 6;
+      const perRow = 5; // systems per row
+      const colGap = (PAGE_W - 2 * M - perRow * SLIM.w) / (perRow - 1);
+      const groupH = STICKER_TYPES.length * SLIM.h + (STICKER_TYPES.length - 1) * STICKER_GAP;
+      const rowsPerPage = Math.floor((PAGE_H - 2 * M + ROW_GAP) / (groupH + ROW_GAP));
+      const perPage = perRow * rowsPerPage;
+
+      const hex2rgb = (h: string): [number, number, number] => [
+        parseInt(h.slice(1, 3), 16),
+        parseInt(h.slice(3, 5), 16),
+        parseInt(h.slice(5, 7), 16),
+      ];
+
+      for (let idx = 0; idx < centreStations.length; idx++) {
+        const ws = centreStations[idx];
+        const slot = idx % perPage;
+        if (idx > 0 && slot === 0) pdf.addPage();
+        const gx = M + (slot % perRow) * (SLIM.w + colGap);
+        const gy = M + Math.floor(slot / perRow) * (groupH + ROW_GAP);
+
+        for (let s = 0; s < STICKER_TYPES.length; s++) {
+          const type = STICKER_TYPES[s];
+          const x = gx;
+          const y = gy + s * (SLIM.h + STICKER_GAP);
+          const [r, g, b] = hex2rgb(type.color);
+
+          pdf.setDrawColor(208, 204, 194);
+          pdf.setFillColor(255, 255, 255);
+          pdf.roundedRect(x, y, SLIM.w, SLIM.h, 2, 2, 'FD');
+
+          // left colour stripe
+          pdf.setFillColor(r, g, b);
+          pdf.rect(x + 0.3, y + 0.6, 1.6, SLIM.h - 1.2, 'F');
+
+          // Data Matrix
+          const svg = document.getElementById(`dm-${ws.id}-${type.key}`) as unknown as SVGSVGElement;
+          if (svg) {
+            const png = await svgToPng(svg, 20);
+            pdf.addImage(png, 'PNG', x + 3.2, y + (SLIM.h - SLIM.dmH) / 2, SLIM.dmW, SLIM.dmH);
+          }
+
+          const tx = x + 3.2 + SLIM.dmW + 2.5;
+
+          // system ID
+          pdf.setTextColor(r, g, b);
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(12);
+          pdf.text(ws.id, tx, y + 5.6);
+
+          // location badge
+          pdf.setFontSize(5);
+          const bw = pdf.getTextWidth(type.location) + 2;
+          pdf.setFillColor(r, g, b);
+          pdf.roundedRect(tx, y + 7, bw, 3, 0.8, 0.8, 'F');
+          pdf.setTextColor(255, 255, 255);
+          pdf.text(type.location, tx + 1, y + 9.15);
+
+          // footer
+          pdf.setTextColor(152, 148, 140);
+          pdf.setFontSize(4.5);
+          pdf.text(`${activeCentre.name.toUpperCase()} · FETS.SPACE`, tx, y + 12.9);
+        }
+      }
+
+      pdf.save(`fets-${activeCentre.id}-slim-stickers-A3.pdf`);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
   const downloadAllQRs = async () => {
     setIsDownloadingAll(true);
     const zip = new JSZip();
     for (const ws of centreStations) {
       for (const st of STICKER_TYPES) {
-        const svg = document.getElementById(`qr-${ws.id}-${st.key}`) as unknown as SVGSVGElement;
+        const svg = document.getElementById(`${codePrefix}-${ws.id}-${st.key}`) as unknown as SVGSVGElement;
         if (svg) {
-          const png = await svgToPng(svg, 5);
+          const png = await svgToPng(svg, codeScale);
           zip.file(`${ws.id}-${st.key}.png`, png.split(',')[1], { base64: true });
         }
       }
     }
     const content = await zip.generateAsync({ type: 'blob' });
-    saveAs(content, `fets-${activeCentre.id}-qrs.zip`);
+    saveAs(content, `fets-${activeCentre.id}-${stickerStyle === 'slim' ? 'slim-codes' : 'qrs'}.zip`);
     setIsDownloadingAll(false);
   };
 
 
-  // --- Print View: A4 sheets, 5 systems per page × 3 stickers ---
+  // --- Print View: A4 sheets — square: 5 systems per page × 3 stickers; slim: 15 systems per page ---
 
   const PrintView = () => {
-    const pages = chunkArrays<Workstation>(centreStations, 5);
+    const slim = stickerStyle === 'slim';
+    const pages = chunkArrays<Workstation>(centreStations, slim ? 15 : 5);
     return (
       <div className="fixed inset-0 bg-paper z-[100] overflow-y-auto p-4 sm:p-8 print:static print:h-auto print:overflow-visible print:bg-white print:p-0 font-sans">
         <div className="max-w-[210mm] mx-auto print:max-w-none">
           <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-8 bg-card p-5 sm:p-6 rounded-2xl border border-line print:hidden">
             <div>
-              <h2 className="font-display text-xl sm:text-2xl uppercase">QR Sticker Sheets</h2>
+              <h2 className="font-display text-xl sm:text-2xl uppercase">{slim ? 'Slim' : 'QR'} Sticker Sheets</h2>
               <p className="font-mono text-[11px] text-ink-soft mt-1">
                 {activeCentre.name} · {centreStations.length} systems · 3 stickers each (Monitor / CPU / Workstation)
               </p>
+              <div className="mt-3">
+                <StickerStyleToggle value={stickerStyle} onChange={setStickerStyle} />
+              </div>
             </div>
             <div className="flex flex-wrap gap-2 sm:gap-3">
               <button
@@ -666,7 +834,21 @@ export default function App() {
           )}
 
           <div className="space-y-4 print:space-y-0">
-            {pages.map((page, pageIndex) => (
+            {slim && pages.map((page, pageIndex) => (
+              <div
+                key={pageIndex}
+                className="bg-white mx-auto print:mx-0 shadow-lg print:shadow-none w-[210mm] h-[297mm] break-after-page box-border p-[10mm] grid grid-cols-3 content-start justify-items-center gap-x-[10mm] gap-y-[6mm]"
+              >
+                {page.map((ws) => (
+                  <div key={ws.id} className="flex flex-col gap-[2mm]">
+                    {STICKER_TYPES.map((type) => (
+                      <SlimSticker key={type.key} ws={ws} type={type} centreName={activeCentre.name} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ))}
+            {!slim && pages.map((page, pageIndex) => (
               <div
                 key={pageIndex}
                 className="bg-white mx-auto print:mx-0 shadow-lg print:shadow-none w-[210mm] h-[297mm] break-after-page box-border p-[10mm] flex flex-col justify-start gap-[5mm]"
@@ -1196,17 +1378,30 @@ export default function App() {
 
                     {/* QR stickers for this system */}
                     <div className="bg-card border border-line rounded-[2rem] p-5 sm:p-7">
-                      <h4 className="font-mono text-[10px] uppercase font-semibold tracking-[0.2em] text-ink-soft mb-1 flex items-center gap-2">
-                        <QrCode size={13} /> Asset Stickers
-                      </h4>
-                      <p className="text-xs text-ink-soft mb-4">Tap a sticker to download as PNG for printing.</p>
-                      <div className="grid grid-cols-3 gap-2.5">
-                        {STICKER_TYPES.map((type) => (
-                          <button key={type.key} onClick={() => downloadQR(selectedStation.id, type.key)} className="active:scale-95 transition-transform text-left">
-                            <Sticker ws={selectedStation} type={type} size={120} centreName={activeCentre.name} />
-                          </button>
-                        ))}
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                        <h4 className="font-mono text-[10px] uppercase font-semibold tracking-[0.2em] text-ink-soft flex items-center gap-2">
+                          <QrCode size={13} /> Asset Stickers
+                        </h4>
+                        <StickerStyleToggle value={stickerStyle} onChange={setStickerStyle} />
                       </div>
+                      <p className="text-xs text-ink-soft mb-4">Tap a sticker to download its code as PNG for printing.</p>
+                      {stickerStyle === 'slim' ? (
+                        <div className="flex flex-wrap gap-2.5">
+                          {STICKER_TYPES.map((type) => (
+                            <button key={type.key} onClick={() => downloadQR(selectedStation.id, type.key)} className="active:scale-95 transition-transform text-left">
+                              <SlimSticker ws={selectedStation} type={type} centreName={activeCentre.name} />
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-2.5">
+                          {STICKER_TYPES.map((type) => (
+                            <button key={type.key} onClick={() => downloadQR(selectedStation.id, type.key)} className="active:scale-95 transition-transform text-left">
+                              <Sticker ws={selectedStation} type={type} size={120} centreName={activeCentre.name} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     <button
